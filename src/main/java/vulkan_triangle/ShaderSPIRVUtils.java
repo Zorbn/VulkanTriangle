@@ -5,9 +5,11 @@ import org.lwjgl.system.NativeResource;
 import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.net.URL;
 import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Paths;
+import java.util.Objects;
 
 import static java.lang.ClassLoader.getSystemClassLoader;
 import static org.lwjgl.system.MemoryUtil.NULL;
@@ -16,7 +18,8 @@ import static org.lwjgl.util.shaderc.Shaderc.*;
 public class ShaderSPIRVUtils {
 
     public static SPIRV compileShaderFile(String shaderFile, ShaderKind shaderKind) {
-        return compileShaderAbsoluteFile(getSystemClassLoader().getResource(shaderFile).toExternalForm(), shaderKind);
+        URL shaderRes = Objects.requireNonNull(getSystemClassLoader().getResource(shaderFile));
+        return compileShaderAbsoluteFile(shaderRes.toExternalForm(), shaderKind);
     }
 
     public static SPIRV compileShaderAbsoluteFile(String shaderFile, ShaderKind shaderKind) {
@@ -26,6 +29,7 @@ public class ShaderSPIRVUtils {
         } catch (IOException | URISyntaxException e) {
             e.printStackTrace();
         }
+
         return null;
     }
 
@@ -33,17 +37,13 @@ public class ShaderSPIRVUtils {
 
         long compiler = shaderc_compiler_initialize();
 
-        if(compiler == NULL) {
-            throw new RuntimeException("Failed to create shader compiler");
-        }
+        if (compiler == NULL) throw new RuntimeException("Failed to create shader compiler");
 
         long result = shaderc_compile_into_spv(compiler, source, shaderKind.kind, filename, "main", NULL);
 
-        if(result == NULL) {
-            throw new RuntimeException("Failed to compile shader " + filename + " into SPIR-V");
-        }
+        if (result == NULL) throw new RuntimeException("Failed to compile shader " + filename + " into SPIR-V");
 
-        if(shaderc_result_get_compilation_status(result) != shaderc_compilation_status_success) {
+        if (shaderc_result_get_compilation_status(result) != shaderc_compilation_status_success) {
             throw new RuntimeException("Failed to compile shader " + filename + "into SPIR-V:\n " + shaderc_result_get_error_message(result));
         }
 
@@ -82,7 +82,7 @@ public class ShaderSPIRVUtils {
         @Override
         public void free() {
             shaderc_result_release(handle);
-            bytecode = null; // Help the GC
+            bytecode = null; // Help the GC.
         }
     }
 

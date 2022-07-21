@@ -101,6 +101,9 @@ public class Main {
         private int currentFrame;
         private boolean frameBufferResize = false;
 
+        private SPIRV vertShaderSPIRV;
+        private SPIRV fragShaderSPIRV;
+
         public void run() {
             initWindow();
             initVulkan();
@@ -135,6 +138,7 @@ public class Main {
             createSwapChain();
             createImageViews();
             createRenderPass();
+            compileShaders();
             createGraphicsPipeline();
             createFrameBuffers();
             createCommandPool();
@@ -230,6 +234,11 @@ public class Main {
             }
         }
 
+        private void compileShaders() {
+            vertShaderSPIRV = compileShaderFile("shaders/shader_base.vert", VERTEX_SHADER);
+            fragShaderSPIRV = compileShaderFile("shaders/shader_base.frag", FRAGMENT_SHADER);
+        }
+
         private void createSyncObjects() {
             inFlightFrames = new ArrayList<>(MAX_FRAMES_IN_FLIGHT);
             imagesInFlight = new HashMap<>(swapChainImages.size());
@@ -248,8 +257,8 @@ public class Main {
 
                 for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++) {
                     if (vkCreateSemaphore(device, semaphoreInfo, null, pImageAvailableSemaphore) != VK_SUCCESS ||
-                        vkCreateSemaphore(device, semaphoreInfo, null, pRenderFinishedSemaphore) != VK_SUCCESS ||
-                        vkCreateFence(device, fenceInfo, null, pFence) != VK_SUCCESS) {
+                            vkCreateSemaphore(device, semaphoreInfo, null, pRenderFinishedSemaphore) != VK_SUCCESS ||
+                            vkCreateFence(device, fenceInfo, null, pFence) != VK_SUCCESS) {
                         throw new RuntimeException("Failed to create synchronization objects for the frame " + i + "!");
                     }
 
@@ -442,9 +451,9 @@ public class Main {
                 IntBuffer width = stack.ints(0);
                 IntBuffer height = stack.ints(0);
 
-                // Pause until window is not minimized. (Minimized windows have a size of 0).
-                while (width.get(0) == 0 && height.get(0) == 0) {
-                    glfwGetFramebufferSize(window, width, height);
+                // Pause while/if window is minimized. (Minimized windows have a size of 0).
+                Runnable getWindowSize = () -> glfwGetFramebufferSize(window, width, height);
+                for (getWindowSize.run(); width.get(0) == 0 && height.get(0) == 0; getWindowSize.run()) {
                     glfwWaitEvents();
                 }
             }
@@ -548,10 +557,7 @@ public class Main {
         }
 
         private void createGraphicsPipeline() {
-            try (MemoryStack stack = stackPush();
-                 SPIRV vertShaderSPIRV = compileShaderFile("shaders/shader_base.vert", VERTEX_SHADER);
-                 SPIRV fragShaderSPIRV = compileShaderFile("shaders/shader_base.frag", FRAGMENT_SHADER)) {
-
+            try (MemoryStack stack = stackPush()) {
                 long vertShaderModule = createShaderModule(vertShaderSPIRV.bytecode());
                 long fragShaderModule = createShaderModule(fragShaderSPIRV.bytecode());
 
@@ -935,9 +941,7 @@ public class Main {
         }
 
         private VkExtent2D chooseSwapExtent(VkSurfaceCapabilitiesKHR capabilities) {
-            if (capabilities.currentExtent().width() != UINT32_MAX) {
-                return capabilities.currentExtent();
-            }
+            if (capabilities.currentExtent().width() != UINT32_MAX) return capabilities.currentExtent();
 
             try (VkExtent2D actualExtent = VkExtent2D.malloc().set(WINDOW_WIDTH, WINDOW_HEIGHT)) {
                 VkExtent2D minExtent = capabilities.minImageExtent();

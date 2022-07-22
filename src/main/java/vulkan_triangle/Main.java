@@ -12,6 +12,11 @@ import java.util.*;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
+import org.joml.Vector2f;
+import org.joml.Vector2fc;
+import org.joml.Vector3f;
+import org.joml.Vector3fc;
+
 import static java.util.stream.Collectors.toSet;
 import static org.lwjgl.glfw.GLFW.*;
 import static org.lwjgl.glfw.GLFWVulkan.glfwCreateWindowSurface;
@@ -20,7 +25,6 @@ import static org.lwjgl.system.Configuration.DEBUG;
 import static org.lwjgl.system.MemoryStack.stackGet;
 import static org.lwjgl.system.MemoryStack.stackPush;
 import static org.lwjgl.system.MemoryUtil.*;
-import static org.lwjgl.vulkan.EXTDebugUtils.*;
 import static org.lwjgl.vulkan.KHRSurface.*;
 import static org.lwjgl.vulkan.KHRSwapchain.*;
 import static org.lwjgl.vulkan.VK10.*;
@@ -49,6 +53,66 @@ public class Main {
             private VkSurfaceFormatKHR.Buffer formats;
             private IntBuffer presentModes;
         }
+
+        private static class Vertex {
+
+            private static final int SIZEOF = (2 + 3) * Float.BYTES;
+            private static final int POS_OFFSET = 0;
+            private static final int COLOR_OFFSET = 2 * Float.BYTES;
+
+            private Vector2fc pos;
+            private Vector3fc color;
+
+            public Vertex(Vector2fc pos, Vector3fc color) {
+                this.pos = pos;
+                this.color = color;
+            }
+
+            private static VkVertexInputBindingDescription.Buffer getBindingDescription() {
+
+                VkVertexInputBindingDescription.Buffer bindingDescription =
+                        VkVertexInputBindingDescription.calloc(1);
+
+                bindingDescription.binding(0);
+                bindingDescription.stride(Vertex.SIZEOF);
+                bindingDescription.inputRate(VK_VERTEX_INPUT_RATE_VERTEX);
+
+                return bindingDescription;
+            }
+
+            private static VkVertexInputAttributeDescription.Buffer getAttributeDescriptions() {
+
+                VkVertexInputAttributeDescription.Buffer attributeDescriptions =
+                        VkVertexInputAttributeDescription.calloc(2);
+
+                // Position.
+                VkVertexInputAttributeDescription posDescription = attributeDescriptions.get(0);
+                posDescription.binding(0);
+                posDescription.location(0);
+                posDescription.format(VK_FORMAT_R32G32_SFLOAT);
+                posDescription.offset(POS_OFFSET);
+
+                // Color.
+                VkVertexInputAttributeDescription colorDescription = attributeDescriptions.get(1);
+                colorDescription.binding(0);
+                colorDescription.location(1);
+                colorDescription.format(VK_FORMAT_R32G32B32_SFLOAT);
+                colorDescription.offset(COLOR_OFFSET);
+
+                return attributeDescriptions.rewind();
+            }
+
+        }
+
+        private static final Vertex[] VERTICES = {
+                new Vertex(new Vector2f(0.0f, -0.5f), new Vector3f(1.0f, 0.0f, 0.0f)),
+                new Vertex(new Vector2f(0.5f, 0.5f), new Vector3f(0.0f, 1.0f, 0.0f)),
+                new Vertex(new Vector2f(-0.5f, 0.5f), new Vector3f(0.0f, 0.0f, 1.0f)),
+                // TODO: Remove this
+                new Vertex(new Vector2f(0.0f, -0.5f), new Vector3f(1.0f, 0.0f, 0.0f)),
+                new Vertex(new Vector2f(-0.5f, 0.5f), new Vector3f(0.0f, 0.0f, 1.0f)),
+                new Vertex(new Vector2f(-1.0f, -0.5f), new Vector3f(1.0f, 0.0f, 0.0f)),
+        };
 
         private static final int UINT32_MAX = 0xffffffff;
         private static final long UINT64_MAX = 0xffffffffffffffffL;
@@ -94,6 +158,10 @@ public class Main {
         private long graphicsPipeline;
 
         private long commandPool;
+
+        private long vertexBuffer;
+        private long vertexBufferMemory;
+
         private List<VkCommandBuffer> commandBuffers;
 
         private List<Frame> inFlightFrames;
@@ -131,18 +199,15 @@ public class Main {
         }
 
         private void initVulkan() {
+            compileShaders();
+            
             createInstance();
             createSurface();
             pickPhysicalDevice();
             createLogicalDevice();
-            createSwapChain();
-            createImageViews();
-            createRenderPass();
-            compileShaders();
-            createGraphicsPipeline();
-            createFrameBuffers();
             createCommandPool();
-            createCommandBuffers();
+            createVertexBuffer();
+            createSwapChainObjects();
             createSyncObjects();
         }
 
@@ -159,6 +224,9 @@ public class Main {
 
         private void cleanup() {
             cleanupSwapChain();
+
+            vkDestroyBuffer(device, vertexBuffer, null);
+            vkFreeMemory(device, vertexBufferMemory, null);
 
             inFlightFrames.forEach(frame -> {
                 vkDestroySemaphore(device, frame.renderFinishedSemaphore(), null);
@@ -190,6 +258,8 @@ public class Main {
                 if (vkResult == VK_ERROR_OUT_OF_DATE_KHR) {
                     recreateSwapChain();
                     return;
+                } else if (vkResult != VK_SUCCESS) {
+                    throw new RuntimeException("Cannot get image!");
                 }
 
                 final int imageIndex = pImageIndex.get(0);
@@ -210,8 +280,9 @@ public class Main {
 
                 vkResetFences(device, thisFrame.pFence());
 
-                if (vkQueueSubmit(graphicsQueue, submitInfo, thisFrame.fence()) != VK_SUCCESS) {
-                    throw new RuntimeException("Failed to submit draw command buffer!");
+                if ((vkResult = vkQueueSubmit(graphicsQueue, submitInfo, thisFrame.fence())) != VK_SUCCESS) {
+                    vkResetFences(device, thisFrame.pFence());
+                    throw new RuntimeException("Failed to submit draw command buffer" + vkResult + "!");
                 }
 
                 VkPresentInfoKHR presentInfo = VkPresentInfoKHR.calloc(stack);
@@ -237,6 +308,75 @@ public class Main {
         private void compileShaders() {
             vertShaderSPIRV = compileShaderFile("shaders/shader_base.vert", VERTEX_SHADER);
             fragShaderSPIRV = compileShaderFile("shaders/shader_base.frag", FRAGMENT_SHADER);
+        }
+
+        private void createVertexBuffer() {
+            try (MemoryStack stack = stackPush()) {
+                VkBufferCreateInfo bufferInfo = VkBufferCreateInfo.calloc(stack);
+                bufferInfo.sType(VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO);
+                bufferInfo.size(Vertex.SIZEOF * VERTICES.length);
+                bufferInfo.usage(VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+                bufferInfo.sharingMode(VK_SHARING_MODE_EXCLUSIVE);
+
+                LongBuffer pVertexBuffer = stack.mallocLong(1);
+
+                if (vkCreateBuffer(device, bufferInfo, null, pVertexBuffer) != VK_SUCCESS) {
+                    throw new RuntimeException("Failed to create vertex buffer!");
+                }
+
+                vertexBuffer = pVertexBuffer.get(0);
+
+                VkMemoryRequirements memoryRequirements = VkMemoryRequirements.malloc(stack);
+                vkGetBufferMemoryRequirements(device, vertexBuffer, memoryRequirements);
+
+                VkMemoryAllocateInfo allocateInfo = VkMemoryAllocateInfo.calloc(stack);
+                allocateInfo.sType(VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO);
+                allocateInfo.allocationSize(memoryRequirements.size());
+                allocateInfo.memoryTypeIndex(findMemoryType(memoryRequirements.memoryTypeBits(), VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT));
+
+                LongBuffer pVertexBufferMemory = stack.mallocLong(1);
+
+                if (vkAllocateMemory(device, allocateInfo, null, pVertexBufferMemory) != VK_SUCCESS) {
+                    throw new RuntimeException("Failed to allocate vertex buffer memory!");
+                }
+
+                vertexBufferMemory = pVertexBufferMemory.get(0);
+
+                vkBindBufferMemory(device, vertexBuffer, vertexBufferMemory, 0);
+
+                PointerBuffer data = stack.mallocPointer(1);
+
+                vkMapMemory(device, vertexBufferMemory, 0, bufferInfo.size(), 0, data);
+                {
+                    memcpy(data.getByteBuffer(0, (int) bufferInfo.size()), VERTICES);
+                }
+                vkUnmapMemory(device, vertexBufferMemory);
+            }
+        }
+
+        private void memcpy(ByteBuffer buffer, Vertex[] vertices) {
+            for (Vertex vertex : vertices) {
+                buffer.putFloat(vertex.pos.x());
+                buffer.putFloat(vertex.pos.y());
+
+                buffer.putFloat(vertex.color.x());
+                buffer.putFloat(vertex.color.y());
+                buffer.putFloat(vertex.color.z());
+            }
+        }
+
+        private int findMemoryType(int typeFilter, int properties) {
+            try (VkPhysicalDeviceMemoryProperties memoryProperties = VkPhysicalDeviceMemoryProperties.malloc()) {
+                vkGetPhysicalDeviceMemoryProperties(physicalDevice, memoryProperties);
+
+                for (int i = 0; i < memoryProperties.memoryTypeCount(); i++) {
+                    if ((typeFilter & (1 << i)) != 0 && (memoryProperties.memoryTypes(i).propertyFlags() & properties) == properties) {
+                        return i;
+                    }
+                }
+
+                throw new RuntimeException("Failed to find suitable memory type!");
+            }
         }
 
         private void createSyncObjects() {
@@ -322,7 +462,12 @@ public class Main {
                 vkCmdBeginRenderPass(commandBuffer, renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
                 {
                     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
-                    vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+
+                    LongBuffer vertexBuffers = stack.longs(vertexBuffer);
+                    LongBuffer offsets = stack.longs(0);
+                    vkCmdBindVertexBuffers(commandBuffer, 0, vertexBuffers, offsets);
+
+                    vkCmdDraw(commandBuffer, VERTICES.length, 1, 0, 0);
                 }
                 vkCmdEndRenderPass(commandBuffer);
 
@@ -453,7 +598,7 @@ public class Main {
 
                 // Pause while/if window is minimized. (Minimized windows have a size of 0).
                 Runnable getWindowSize = () -> glfwGetFramebufferSize(window, width, height);
-                for (getWindowSize.run(); width.get(0) == 0 && height.get(0) == 0; getWindowSize.run()) {
+                for (getWindowSize.run(); width.get(0) == 0 || height.get(0) == 0; getWindowSize.run()) {
                     glfwWaitEvents();
                 }
             }
@@ -580,6 +725,8 @@ public class Main {
                 // Vertex stage.
                 VkPipelineVertexInputStateCreateInfo vertexInputInfo = VkPipelineVertexInputStateCreateInfo.calloc(stack);
                 vertexInputInfo.sType(VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO);
+                vertexInputInfo.pVertexBindingDescriptions(Vertex.getBindingDescription());
+                vertexInputInfo.pVertexAttributeDescriptions(Vertex.getAttributeDescriptions());
 
                 // Assembly stage.
                 VkPipelineInputAssemblyStateCreateInfo inputAssembly = VkPipelineInputAssemblyStateCreateInfo.calloc(stack);
@@ -941,7 +1088,9 @@ public class Main {
         }
 
         private VkExtent2D chooseSwapExtent(VkSurfaceCapabilitiesKHR capabilities) {
-            if (capabilities.currentExtent().width() != UINT32_MAX) return capabilities.currentExtent();
+            if (capabilities.currentExtent().width() != UINT32_MAX) {
+                return capabilities.currentExtent();
+            }
 
             try (VkExtent2D actualExtent = VkExtent2D.malloc().set(WINDOW_WIDTH, WINDOW_HEIGHT)) {
                 VkExtent2D minExtent = capabilities.minImageExtent();

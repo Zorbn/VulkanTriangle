@@ -4,7 +4,7 @@ import java.nio.LongBuffer;
 
 import static org.lwjgl.system.MemoryStack.stackGet;
 
-/*
+/**
  * Wrapper for the sync objects of an in-flight frame.
  * The sync objects must be deleted manually!
  */

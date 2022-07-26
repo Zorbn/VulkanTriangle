@@ -25,6 +25,8 @@ public class UniformBufferObject implements MemCopyable {
         model.get(0, buffer);
         view.get(AlignmentUtils.align(mat4Size, MATRIX4F_ALIGNMENT), buffer);
         proj.get(AlignmentUtils.align(mat4Size * 2, MATRIX4F_ALIGNMENT), buffer);
+
+        buffer.rewind();
     }
 
     public int getByteLength() {

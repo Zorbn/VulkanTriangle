@@ -8,8 +8,8 @@ import org.lwjgl.system.Pointer;
 import org.lwjgl.vulkan.*;
 
 import java.nio.ByteBuffer;
-import java.nio.IntBuffer;
 import java.nio.LongBuffer;
+import java.nio.IntBuffer;
 import java.util.*;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
@@ -30,6 +30,9 @@ import static vulkan_triangle.ShaderSPIRVUtils.ShaderKind.FRAGMENT_SHADER;
 import static vulkan_triangle.ShaderSPIRVUtils.ShaderKind.VERTEX_SHADER;
 import static vulkan_triangle.ShaderSPIRVUtils.compileShaderFile;
 
+// TODO: Abstract initialization and creation of swap-chain/pipeline.
+// create a distinction between resources initialized once and resources,
+// recreated or created multiple times.
 public class Renderer {
     private static class QueueFamilyIndices {
         private Integer graphicsFamily;
@@ -44,14 +47,21 @@ public class Renderer {
         }
     }
 
-    private static final VertexBufferObject VERTEX_BUFFER_DATA = new VertexBufferObject(new Vertex[] {
+    private static final VertexBufferObject VERTEX_BUFFER_DATA_2 = new VertexBufferObject(new Vertex[]{
+            new Vertex(new Vector2f(-0.5f, -0.5f), new Vector3f(0.5f, 0.0f, 0.0f)),
+            new Vertex(new Vector2f(0.5f, -0.5f), new Vector3f(0.0f, 0.5f, 0.0f)),
+            new Vertex(new Vector2f(0.5f, 0.5f), new Vector3f(0.0f, 0.0f, 0.5f)),
+            new Vertex(new Vector2f(-0.5f, 0.5f), new Vector3f(0.5f, 0.5f, 0.5f))
+    });
+
+    private static final VertexBufferObject VERTEX_BUFFER_DATA = new VertexBufferObject(new Vertex[]{
             new Vertex(new Vector2f(-0.5f, -0.5f), new Vector3f(1.0f, 0.0f, 0.0f)),
             new Vertex(new Vector2f(0.5f, -0.5f), new Vector3f(0.0f, 1.0f, 0.0f)),
             new Vertex(new Vector2f(0.5f, 0.5f), new Vector3f(0.0f, 0.0f, 1.0f)),
             new Vertex(new Vector2f(-0.5f, 0.5f), new Vector3f(1.0f, 1.0f, 1.0f))
     });
 
-    private static final IndexBufferObject INDEX_BUFFER_DATA = new IndexBufferObject(new short[] {
+    private static final IndexBufferObject INDEX_BUFFER_DATA = new IndexBufferObject(new short[]{
             0, 1, 2,
             2, 3, 0
     });
@@ -99,8 +109,8 @@ public class Renderer {
     private long descriptorPool;
     private long descriptorSetLayout;
     private List<Long> descriptorSets;
-    private long pipelineLayout;
-    private long graphicsPipeline;
+    private VkGraphicsPipeline graphicsPipeline;
+    private VkGraphicsPipeline graphicsPipeline2;
 
     private long commandPool;
 
@@ -116,11 +126,12 @@ public class Renderer {
     private boolean frameBufferResize = false;
 
     private ShaderSPIRVUtils.SPIRV vertShaderSPIRV;
+    private ShaderSPIRVUtils.SPIRV vertShader2SPIRV;
     private ShaderSPIRVUtils.SPIRV fragShaderSPIRV;
 
-    private VkBufferPool memPool;
-    private VkBufferPool transferMemPool;
-    private VkBufferPool uniformMemPool;
+    private VkBufferPool bufferPool;
+    private VkBufferPool transferBufferPool;
+    private VkBufferPool uniformBufferPool;
 
     public void run() {
         initWindow();
@@ -151,22 +162,20 @@ public class Renderer {
     private void initVulkan() {
         compileShaders();
 
-
         createInstance();
         createSurface();
         pickPhysicalDevice();
         createLogicalDevice();
         createCommandPool();
 
-        memPool = new VkBufferPool(physicalDevice, device, 1_000_000,
+        bufferPool = new VkBufferPool(physicalDevice, device, 1_000_000,
                 VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
                 VK_MEMORY_HEAP_DEVICE_LOCAL_BIT);
-        transferMemPool = new VkBufferPool(physicalDevice, device, 1_000_000,
+        transferBufferPool = new VkBufferPool(physicalDevice, device, 1_000_000,
                 VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                 VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         vertexBuffer = createBuffer(VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VERTEX_BUFFER_DATA);
         indexBuffer = createBuffer(VK_BUFFER_USAGE_INDEX_BUFFER_BIT, INDEX_BUFFER_DATA);
-        transferMemPool.free();
 
         createDescriptorSetLayout();
         createSwapChainObjects();
@@ -189,7 +198,8 @@ public class Renderer {
 
         vkDestroyDescriptorSetLayout(device, descriptorSetLayout, null);
 
-        memPool.free();
+        bufferPool.free();
+        transferBufferPool.free();
 
         inFlightFrames.forEach(frame -> {
             vkDestroySemaphore(device, frame.renderFinishedSemaphore(), null);
@@ -228,6 +238,12 @@ public class Renderer {
             final int imageIndex = pImageIndex.get(0);
 
             updateUniformBuffer(imageIndex);
+
+//            if (Math.sin(glfwGetTime()) > 0D) {
+//                updateBuffer(vertexBuffer, VERTEX_BUFFER_DATA);
+//            } else {
+//                updateBuffer(vertexBuffer, VERTEX_BUFFER_DATA_2);
+//            }
 
             if (imagesInFlight.containsKey(imageIndex)) {
                 vkWaitForFences(device, imagesInFlight.get(imageIndex).fence(), true, UINT64_MAX);
@@ -273,29 +289,34 @@ public class Renderer {
     private void compileShaders() {
         vertShaderSPIRV = compileShaderFile("shaders/shader_base.vert", VERTEX_SHADER);
         fragShaderSPIRV = compileShaderFile("shaders/shader_base.frag", FRAGMENT_SHADER);
+        vertShader2SPIRV = compileShaderFile("shaders/shader_base_2.vert", VERTEX_SHADER);
     }
 
     private <T extends MemCopyable> VkBufferPool.Buffer createBuffer(int usage, T data) {
+        int size = data.getByteLength();
+        VkBufferPool.Buffer resultBuffer = bufferPool.createBuffer(size, VK_BUFFER_USAGE_TRANSFER_DST_BIT | usage);
+        updateBuffer(resultBuffer, data);
+
+        return resultBuffer;
+    }
+
+    // TODO: Cache staging buffers.
+    private <T extends MemCopyable> void updateBuffer(VkBufferPool.Buffer buffer, T data) {
+        int size = data.getByteLength();
+        VkBufferPool.Buffer stagingBuffer = transferBufferPool.createBuffer(size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+        copyDataToBuffer(transferBufferPool, stagingBuffer, data);
+        copyBuffer(stagingBuffer.handle(), buffer.handle(), size);
+        transferBufferPool.destroyBuffer(stagingBuffer);
+    }
+
+    private <T extends MemCopyable> void copyDataToBuffer(VkBufferPool pool, VkBufferPool.Buffer buffer, T data) {
         try (MemoryStack stack = stackPush()) {
-            int size = data.getByteLength();
-            VkBufferPool.Buffer stagingBuffer = transferMemPool.createBuffer(size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
-
             PointerBuffer pData = stack.mallocPointer(1);
-            transferMemPool.mapBufferMemory(stagingBuffer, pData);
+            pool.mapBufferMemory(buffer, pData);
             {
-                data.copyTo(pData.getByteBuffer(0, size));
+                data.copyTo(pData.getByteBuffer(0, data.getByteLength()));
             }
-            transferMemPool.unmapMemory();
-
-            VkBufferPool.Buffer resultBuffer = memPool.createBuffer(size, VK_BUFFER_USAGE_TRANSFER_DST_BIT | usage);
-            copyBuffer(stagingBuffer.handle(), resultBuffer.handle(), size);
-
-            /* TODO: Consider adding a way to free parts of a buffer so that the following is still possible:
-             * vkDestroyBuffer(device, stagingBuffer, null);
-             * vkFreeMemory(device, stagingBufferMemory, null);
-             */
-
-            return resultBuffer;
+            pool.unmapMemory();
         }
     }
 
@@ -418,14 +439,19 @@ public class Renderer {
 
             vkCmdBeginRenderPass(commandBuffer, renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
             {
-                vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
+                vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline.handle());
 
                 LongBuffer vertexBuffers = stack.longs(vertexBuffer.handle());
                 LongBuffer offsets = stack.longs(0);
                 vkCmdBindVertexBuffers(commandBuffer, 0, vertexBuffers, offsets);
                 vkCmdBindIndexBuffer(commandBuffer, indexBuffer.handle(), 0, VK_INDEX_TYPE_UINT16);
-                vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, stack.longs(descriptorSets.get(i)), null);
+                vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline.layoutHandle(), 0, stack.longs(descriptorSets.get(i)), null);
 
+                vkCmdDrawIndexed(commandBuffer, INDEX_BUFFER_DATA.data.length, 1, 0, 0, 0);
+
+                // TODO: Remove graphicsPipeline2, and vertexShader2, they are for testing only.
+                vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline2.handle());
+                vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline2.layoutHandle(), 0, stack.longs(descriptorSets.get(i)), null);
                 vkCmdDrawIndexed(commandBuffer, INDEX_BUFFER_DATA.data.length, 1, 0, 0, 0);
             }
             vkCmdEndRenderPass(commandBuffer);
@@ -528,7 +554,7 @@ public class Renderer {
     }
 
     private void cleanupSwapChain() {
-        uniformMemPool.free();
+        uniformBufferPool.free();
 
         vkDestroyDescriptorPool(device, descriptorPool, null);
 
@@ -536,8 +562,8 @@ public class Renderer {
 
         vkFreeCommandBuffers(device, commandPool, asPointerBuffer(commandBuffers));
 
-        vkDestroyPipeline(device, graphicsPipeline, null);
-        vkDestroyPipelineLayout(device, pipelineLayout, null);
+        vkDestroyPipeline(device, graphicsPipeline.handle(), null);
+        vkDestroyPipelineLayout(device, graphicsPipeline.layoutHandle(), null);
         vkDestroyRenderPass(device, renderPass, null);
 
         swapChainImageViews.forEach(imageView -> vkDestroyImageView(device, imageView, null));
@@ -549,10 +575,11 @@ public class Renderer {
         createSwapChain();
         createImageViews();
         createRenderPass();
-        createGraphicsPipeline();
+        graphicsPipeline = createGraphicsPipeline(vertShaderSPIRV, fragShaderSPIRV);
+        graphicsPipeline2 = createGraphicsPipeline(vertShader2SPIRV, fragShaderSPIRV);
         createFrameBuffers();
 
-        uniformMemPool = new VkBufferPool(physicalDevice, device, 1_000_000, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+        uniformBufferPool = new VkBufferPool(physicalDevice, device, 1_000_000, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         createUniformBuffers();
 
         createDescriptorPool();
@@ -714,10 +741,10 @@ public class Renderer {
         }
     }
 
-    private void createGraphicsPipeline() {
+    private VkGraphicsPipeline createGraphicsPipeline(ShaderSPIRVUtils.SPIRV vertShader, ShaderSPIRVUtils.SPIRV fragShader) {
         try (MemoryStack stack = stackPush()) {
-            long vertShaderModule = createShaderModule(vertShaderSPIRV.bytecode());
-            long fragShaderModule = createShaderModule(fragShaderSPIRV.bytecode());
+            long vertShaderModule = createShaderModule(vertShader.bytecode());
+            long fragShaderModule = createShaderModule(fragShader.bytecode());
 
             ByteBuffer entryPoint = stack.UTF8("main");
 
@@ -805,7 +832,7 @@ public class Renderer {
                 throw new RuntimeException("Failed to create pipeline layout!");
             }
 
-            pipelineLayout = pPipelineLayout.get(0);
+            long pipelineLayoutHandle = pPipelineLayout.get(0);
 
             // With all the previous info provided, actually create the graphics pipeline.
             VkGraphicsPipelineCreateInfo.Buffer pipelineInfo = VkGraphicsPipelineCreateInfo.calloc(1, stack);
@@ -817,7 +844,7 @@ public class Renderer {
             pipelineInfo.pRasterizationState(rasterizer);
             pipelineInfo.pMultisampleState(multisampling);
             pipelineInfo.pColorBlendState(colorBlending);
-            pipelineInfo.layout(pipelineLayout);
+            pipelineInfo.layout(pipelineLayoutHandle);
             pipelineInfo.renderPass(renderPass);
             pipelineInfo.subpass(0);
             pipelineInfo.basePipelineHandle(VK_NULL_HANDLE);
@@ -829,11 +856,13 @@ public class Renderer {
                 throw new RuntimeException("Failed to create graphics pipeline!");
             }
 
-            graphicsPipeline = pGraphicsPipeline.get(0);
+            long pipelineHandle = pGraphicsPipeline.get(0);
 
             // Release resources.
             vkDestroyShaderModule(device, vertShaderModule, null);
             vkDestroyShaderModule(device, fragShaderModule, null);
+
+            return new VkGraphicsPipeline(pipelineHandle, pipelineLayoutHandle);
         }
     }
 
@@ -841,7 +870,7 @@ public class Renderer {
         uniformBuffers = new ArrayList<>(swapChainImages.size());
 
         for (int i = 0; i < swapChainImages.size(); i++) {
-            uniformBuffers.add(uniformMemPool.createBuffer(UniformBufferObject.SIZE, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT));
+            uniformBuffers.add(uniformBufferPool.createBuffer(UniformBufferObject.SIZE, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT));
         }
     }
 
@@ -899,11 +928,11 @@ public class Renderer {
 
             PointerBuffer data = stack.mallocPointer(1);
 
-            uniformMemPool.mapBufferMemory(uniformBuffers.get(currentImage), data);
+            uniformBufferPool.mapBufferMemory(uniformBuffers.get(currentImage), data);
             {
                 ubo.copyTo(data.getByteBuffer(0, UniformBufferObject.SIZE));
             }
-            uniformMemPool.unmapMemory();
+            uniformBufferPool.unmapMemory();
         }
     }
 

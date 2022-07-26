@@ -18,6 +18,8 @@ public class VertexBufferObject implements MemCopyable {
             buffer.putFloat(vertex.color().y());
             buffer.putFloat(vertex.color().z());
         }
+
+        buffer.rewind();
     }
 
     public int getByteLength() {

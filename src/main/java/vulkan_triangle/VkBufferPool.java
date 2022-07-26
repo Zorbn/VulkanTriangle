@@ -6,13 +6,14 @@ import org.lwjgl.system.NativeResource;
 import org.lwjgl.vulkan.*;
 
 import java.nio.LongBuffer;
+import java.util.Comparator;
 import java.util.HashMap;
 
 import static org.lwjgl.system.MemoryStack.stackPush;
 import static org.lwjgl.vulkan.VK10.*;
 
 public class VkBufferPool implements NativeResource {
-    public record Buffer(long handle, int memOffset, long size) { }
+    public record Buffer(long handle, Long memOffset, long size) {}
 
     // Alignment required by Vulkan spec.
     private static final int OFFSET_ALIGNMENT = 0x100;
@@ -20,9 +21,10 @@ public class VkBufferPool implements NativeResource {
     private final VkDevice device;
     private final long memoryHandle;
     private final HashMap<Long, Buffer> buffers = new HashMap<>();
-    private int totalOffset;
+    private final long poolSize;
 
     public VkBufferPool(VkPhysicalDevice physicalDevice, VkDevice device, long size, int usages, int properties) {
+        poolSize = size;
         this.device = device;
 
         try (MemoryStack stack = stackPush()) {
@@ -73,13 +75,40 @@ public class VkBufferPool implements NativeResource {
 
             long bufferHandle = pBuffer.get(0);
 
-            vkBindBufferMemory(device, bufferHandle, memoryHandle, totalOffset);
-            buffers.put(bufferHandle, new Buffer(bufferHandle, totalOffset, size));
-            long sizeInChunks = AlignmentUtils.align(size, OFFSET_ALIGNMENT);
-            totalOffset += sizeInChunks;
+            boolean foundAvailableSpace = false;
+            long targetOffset = 0;
+
+            Buffer[] sortedBuffers = buffers.values().stream()
+                    .sorted(Comparator.comparing(b -> b.memOffset)).toArray(Buffer[]::new);
+
+            for (int i = 0; i == 0 || i < sortedBuffers.length; i++) {
+                long bufferEnd = (i >= sortedBuffers.length) ? 0 :
+                        sortedBuffers[i].memOffset + AlignmentUtils.align(sortedBuffers[i].size, OFFSET_ALIGNMENT);
+
+                long nextBufferStart = (i < sortedBuffers.length - 1) ? sortedBuffers[i + 1].memOffset : poolSize;
+
+                if (nextBufferStart - bufferEnd >= size) {
+                    targetOffset = bufferEnd;
+                    foundAvailableSpace = true;
+                    break;
+                }
+            }
+
+            if (!foundAvailableSpace) {
+                vkDestroyBuffer(device, bufferHandle, null);
+                throw new RuntimeException("VkBufferPool doesn't contain enough space for a new buffer!");
+            }
+
+            vkBindBufferMemory(device, bufferHandle, memoryHandle, targetOffset);
+            buffers.put(bufferHandle, new Buffer(bufferHandle, targetOffset, size));
 
             return buffers.get(bufferHandle);
         }
+    }
+
+    public void destroyBuffer(Buffer buffer) {
+        freeBuffer(buffer);
+        buffers.remove(buffer.handle);
     }
 
     public void mapBufferMemory(Buffer buffer, PointerBuffer pData) {
@@ -92,8 +121,12 @@ public class VkBufferPool implements NativeResource {
 
     @Override
     public void free() {
-        buffers.forEach((handle, buffer) -> vkDestroyBuffer(device, handle, null));
+        buffers.forEach((handle, buffer) -> freeBuffer(buffer));
         vkFreeMemory(device, memoryHandle, null);
+    }
+
+    private void freeBuffer(Buffer buffer) {
+        vkDestroyBuffer(device, buffer.handle, null);
     }
 
     private int findMemoryType(VkPhysicalDevice physicalDevice, int typeFilter, int properties) {

@@ -7,11 +7,12 @@ import org.lwjgl.vulkan.VkVertexInputBindingDescription;
 
 import static org.lwjgl.vulkan.VK10.*;
 
-public record Vertex(Vector2fc pos, Vector3fc color) {
+public record Vertex(Vector2fc pos, Vector3fc color, Vector2fc texCoords) {
 
-    public static final int SIZE = (2 + 3) * Float.BYTES;
+    public static final int SIZE = (2 + 3 + 2) * Float.BYTES;
     public static final int POS_OFFSET = 0;
     public static final int COLOR_OFFSET = 2 * Float.BYTES;
+    public static final int TEX_COORD_OFFSET = 5 * Float.BYTES;
 
     public static VkVertexInputBindingDescription.Buffer getBindingDescription() {
 
@@ -28,7 +29,7 @@ public record Vertex(Vector2fc pos, Vector3fc color) {
     public static VkVertexInputAttributeDescription.Buffer getAttributeDescriptions() {
 
         VkVertexInputAttributeDescription.Buffer attributeDescriptions =
-                VkVertexInputAttributeDescription.calloc(2);
+                VkVertexInputAttributeDescription.calloc(3);
 
         // Position.
         VkVertexInputAttributeDescription posDescription = attributeDescriptions.get(0);
@@ -43,6 +44,13 @@ public record Vertex(Vector2fc pos, Vector3fc color) {
         colorDescription.location(1);
         colorDescription.format(VK_FORMAT_R32G32B32_SFLOAT);
         colorDescription.offset(COLOR_OFFSET);
+
+        // Texture coordinates.
+        VkVertexInputAttributeDescription texCoordsDescription = attributeDescriptions.get(2);
+        texCoordsDescription.binding(0);
+        texCoordsDescription.location(2);
+        texCoordsDescription.format(VK_FORMAT_R32G32_SFLOAT);
+        texCoordsDescription.offset(TEX_COORD_OFFSET);
 
         return attributeDescriptions.rewind();
     }

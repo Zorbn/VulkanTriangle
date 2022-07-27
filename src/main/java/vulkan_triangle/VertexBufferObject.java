@@ -17,6 +17,9 @@ public class VertexBufferObject implements MemCopyable {
             buffer.putFloat(vertex.color().x());
             buffer.putFloat(vertex.color().y());
             buffer.putFloat(vertex.color().z());
+
+            buffer.putFloat(vertex.texCoords().x());
+            buffer.putFloat(vertex.texCoords().y());
         }
 
         buffer.rewind();

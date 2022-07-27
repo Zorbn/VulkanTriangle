@@ -12,6 +12,7 @@ import java.util.HashMap;
 import static org.lwjgl.system.MemoryStack.stackPush;
 import static org.lwjgl.vulkan.VK10.*;
 
+// TODO: Also support allocating images.
 public class VkBufferPool implements NativeResource {
     public record Buffer(long handle, Long memOffset, long size) {}
 
@@ -129,7 +130,7 @@ public class VkBufferPool implements NativeResource {
         vkDestroyBuffer(device, buffer.handle, null);
     }
 
-    private int findMemoryType(VkPhysicalDevice physicalDevice, int typeFilter, int properties) {
+    public static int findMemoryType(VkPhysicalDevice physicalDevice, int typeFilter, int properties) {
         try (VkPhysicalDeviceMemoryProperties memoryProperties = VkPhysicalDeviceMemoryProperties.malloc()) {
             vkGetPhysicalDeviceMemoryProperties(physicalDevice, memoryProperties);
 
